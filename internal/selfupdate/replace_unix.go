@@ -1,3 +1,5 @@
+//go:build !windows
+
 package selfupdate
 
 import (
@@ -6,14 +8,14 @@ import (
 	"path/filepath"
 )
 
-func replaceExecutable(path string, data []byte) error {
+func replaceExecutable(path string, data []byte) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("inspect current executable: %w", err)
+		return false, fmt.Errorf("inspect current executable: %w", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".ccauth-update-*")
 	if err != nil {
-		return fmt.Errorf("create update beside executable: %w", err)
+		return false, fmt.Errorf("create update beside executable: %w", err)
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
@@ -26,21 +28,21 @@ func replaceExecutable(path string, data []byte) error {
 	}
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
-		return err
+		return false, err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return err
+		return false, err
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return err
+		return false, err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return false, err
 	}
 	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("replace executable: %w", err)
+		return false, fmt.Errorf("replace executable: %w", err)
 	}
-	return nil
+	return false, nil
 }

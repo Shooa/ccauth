@@ -5,6 +5,7 @@ package selfupdate
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -57,6 +58,11 @@ type Info struct {
 	Release        Release
 }
 
+type Result struct {
+	Version  string
+	Deferred bool
+}
+
 type cacheFile struct {
 	CheckedAt time.Time `json:"checked_at"`
 	Release   Release   `json:"release"`
@@ -85,30 +91,31 @@ func IsReleaseVersion(value string) bool {
 	return isReleaseVersion(value)
 }
 
-func Update(ctx context.Context, currentVersion string) (string, error) {
+func Update(ctx context.Context, currentVersion string) (Result, error) {
 	info, err := Check(ctx, currentVersion, true)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if !info.Available && isReleaseVersion(currentVersion) {
-		return normalizeVersion(currentVersion), nil
+		return Result{Version: normalizeVersion(currentVersion)}, nil
 	}
 	path, err := executable()
 	if err != nil {
-		return "", fmt.Errorf("locate executable: %w", err)
+		return Result{}, fmt.Errorf("locate executable: %w", err)
 	}
 	path, err = filepath.EvalSymlinks(path)
 	if err != nil {
-		return "", fmt.Errorf("resolve executable: %w", err)
+		return Result{}, fmt.Errorf("resolve executable: %w", err)
 	}
 	data, err := downloadVerifiedBinary(ctx, info.Release)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
-	if err := replaceExecutable(path, data); err != nil {
-		return "", err
+	deferred, err := replaceExecutable(path, data)
+	if err != nil {
+		return Result{}, err
 	}
-	return info.LatestVersion, nil
+	return Result{Version: info.LatestVersion, Deferred: deferred}, nil
 }
 
 func releaseInfo(current string, release Release) Info {
@@ -150,7 +157,13 @@ func fetchRelease(ctx context.Context) (Release, error) {
 
 func downloadVerifiedBinary(ctx context.Context, release Release) ([]byte, error) {
 	version := normalizeVersion(release.TagName)
-	archiveName := fmt.Sprintf("ccauth_%s_%s_%s.tar.gz", version, runtimeGOOS, runtimeGOARCH)
+	extension := ".tar.gz"
+	binaryName := "ccauth"
+	if runtimeGOOS == "windows" {
+		extension = ".zip"
+		binaryName = "ccauth.exe"
+	}
+	archiveName := fmt.Sprintf("ccauth_%s_%s_%s%s", version, runtimeGOOS, runtimeGOARCH, extension)
 	archiveURL, sumsURL := "", ""
 	for _, asset := range release.Assets {
 		switch asset.Name {
@@ -182,7 +195,10 @@ func downloadVerifiedBinary(ctx context.Context, release Release) ([]byte, error
 	if !strings.EqualFold(hex.EncodeToString(got[:]), want) {
 		return nil, fmt.Errorf("checksum mismatch for %s", archiveName)
 	}
-	return extractTarGZ(archive, "ccauth")
+	if extension == ".zip" {
+		return extractZip(archive, binaryName)
+	}
+	return extractTarGZ(archive, binaryName)
 }
 
 func download(ctx context.Context, target string, limit int64) ([]byte, error) {
@@ -251,6 +267,38 @@ func extractTarGZ(data []byte, binaryName string) ([]byte, error) {
 			}
 			return io.ReadAll(io.LimitReader(tarReader, maxAssetBytes+1))
 		}
+	}
+	return nil, fmt.Errorf("release archive does not contain %s", binaryName)
+}
+
+func extractZip(data []byte, binaryName string) ([]byte, error) {
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("open release archive: %w", err)
+	}
+	for _, file := range reader.File {
+		if filepath.Base(file.Name) != binaryName || file.FileInfo().IsDir() {
+			continue
+		}
+		if file.UncompressedSize64 > maxAssetBytes {
+			return nil, errors.New("executable in release archive is too large")
+		}
+		opened, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		content, readErr := io.ReadAll(io.LimitReader(opened, maxAssetBytes+1))
+		closeErr := opened.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if len(content) > maxAssetBytes {
+			return nil, errors.New("executable in release archive is too large")
+		}
+		return content, nil
 	}
 	return nil, fmt.Errorf("release archive does not contain %s", binaryName)
 }

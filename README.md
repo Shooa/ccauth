@@ -41,8 +41,16 @@ $ ccauth restore work --settings   # also swaps settings.json (backup: settings.
 
 ## Install
 
+macOS / Linux:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Shooa/ccauth/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Shooa/ccauth/main/install.ps1 | iex
 ```
 
 Or manually: grab `ccauth_<ver>_<os>_<arch>.tar.gz` from

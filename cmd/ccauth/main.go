@@ -293,11 +293,15 @@ func cmdUpdate() error {
 	if err != nil {
 		return err
 	}
-	if result == version {
-		fmt.Printf("Already up to date: ccauth %s\n", result)
+	if result.Deferred {
+		fmt.Println("Downloaded ccauth " + result.Version + ". Windows will finish the update after this process exits.")
 		return nil
 	}
-	fmt.Printf("Updated to ccauth %s\n", result)
+	if result.Version == version {
+		fmt.Printf("Already up to date: ccauth %s\n", result.Version)
+		return nil
+	}
+	fmt.Printf("Updated to ccauth %s\n", result.Version)
 	return nil
 }
 
@@ -361,11 +365,13 @@ func offerUpdate(ctx context.Context, args []string) bool {
 		fmt.Fprintf(os.Stderr, "ccauth: automatic update failed: %v\nContinuing with the current version.\n", err)
 		return false
 	}
-	if result == version {
-		fmt.Fprintf(os.Stderr, "Already up to date: ccauth %s\n", result)
-		return false
+	if result.Deferred {
+		fmt.Fprintf(os.Stderr, "Downloaded ccauth %s. Windows will finish the update after this process exits.\nRun the command again.\n", result.Version)
+	} else if result.Version == version {
+		fmt.Fprintf(os.Stderr, "Already up to date: ccauth %s\n", result.Version)
+	} else {
+		fmt.Fprintf(os.Stderr, "Updated to ccauth %s. Run the command again.\n", result.Version)
 	}
-	fmt.Fprintf(os.Stderr, "Updated to ccauth %s. Run the command again.\n", result)
 	return true
 }
 

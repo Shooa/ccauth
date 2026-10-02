@@ -15,6 +15,8 @@ targets=(
   "darwin arm64"
   "linux amd64"
   "linux arm64"
+  "windows amd64"
+  "windows arm64"
 )
 
 ldflags="-s -w -X main.version=${version}"
@@ -25,21 +27,30 @@ for target in "${targets[@]}"; do
   target_dir="${stage_dir}/${archive_base}"
   mkdir -p "${target_dir}"
 
+  binary_name="ccauth"
+  if [[ "${target_os}" == "windows" ]]; then
+    binary_name="ccauth.exe"
+  fi
+
   echo "Building ${target_os}/${target_arch}"
   CGO_ENABLED=0 GOOS="${target_os}" GOARCH="${target_arch}" \
     go build -trimpath -ldflags "${ldflags}" \
-    -o "${target_dir}/ccauth" "${repository_root}/cmd/ccauth"
+    -o "${target_dir}/${binary_name}" "${repository_root}/cmd/ccauth"
 
-  tar -C "${target_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" ccauth
+  if [[ "${target_os}" == "windows" ]]; then
+    (cd "${target_dir}" && zip -q "${dist_dir}/${archive_base}.zip" "${binary_name}")
+  else
+    tar -C "${target_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" "${binary_name}"
+  fi
 done
 
 rm -rf "${stage_dir}"
 (
   cd "${dist_dir}"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum ./*.tar.gz > SHA256SUMS
+    sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
   else
-    shasum -a 256 ./*.tar.gz > SHA256SUMS
+    shasum -a 256 ./*.tar.gz ./*.zip > SHA256SUMS
   fi
 )
 
