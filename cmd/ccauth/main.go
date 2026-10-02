@@ -24,13 +24,13 @@ func usage(w *os.File) {
 	fmt.Fprint(w, `ccauth — save/restore Claude Code authorization profiles
 
 Usage:
-  ccauth save <name> [--settings]   Save current auth (and optionally settings.json)
+  ccauth save [name] [--settings]    Save current auth; prompts for name if omitted
   ccauth restore [name] [--settings] Restore profile; without name: interactive picker
-  ccauth list                       List profiles with token expiry
-  ccauth show <name>                Profile details
-  ccauth current                    Show live credentials info
-  ccauth remove <name>              Delete profile
-  ccauth update                     Update ccauth to the latest release
+  ccauth list                        List profiles with token expiry
+  ccauth show [name]                 Profile details; without name: interactive picker
+  ccauth current                     Show live credentials info
+  ccauth remove [name]               Delete profile; without name: interactive picker
+  ccauth update                      Update ccauth to the latest release
 
 Shortcuts: s=save r=restore/use cur=current up=update rm=remove ls=list
 
@@ -95,16 +95,77 @@ func newFlagSet(name string) *flag.FlagSet {
 	return fs
 }
 
+// pickProfile prints a numbered profile list (active one marked with *) and
+// asks the user to pick one by number or by name. Returns ok=false when the
+// user cancelled.
+func pickProfile(action string) (store.Profile, bool, error) {
+	profiles, err := store.List()
+	if err != nil {
+		return store.Profile{}, false, err
+	}
+	if len(profiles) == 0 {
+		fmt.Println("No profiles. Create one: ccauth save <name>")
+		return store.Profile{}, false, nil
+	}
+	active := activeProfileName()
+	now := time.Now()
+	fmt.Println("Available profiles:")
+	for i, p := range profiles {
+		mark := " "
+		if p.Name == active {
+			mark = "*"
+		}
+		fmt.Printf("  %2d) %s %-12s %-28s %s\n", i+1, mark, p.Name,
+			ui.Truncate(p.Account.EmailAddress, 28),
+			expiryCell(p.Credentials.ClaudeAiOauth.RefreshTokenExpiresAt, now))
+	}
+	fmt.Fprintf(os.Stderr, "%s (number or name, empty = cancel): ", action)
+	answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
+	if readErr != nil && len(answer) == 0 {
+		return store.Profile{}, false, fmt.Errorf("cancelled")
+	}
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		fmt.Println("Cancelled.")
+		return store.Profile{}, false, nil
+	}
+	for _, p := range profiles {
+		if p.Name == answer {
+			return p, true, nil
+		}
+	}
+	n, aerr := strconv.Atoi(answer)
+	if aerr != nil || n < 1 || n > len(profiles) {
+		return store.Profile{}, false, fmt.Errorf("invalid selection %q (1-%d or profile name)", answer, len(profiles))
+	}
+	return profiles[n-1], true, nil
+}
+
 func cmdSave(args []string) error {
 	fs := newFlagSet("save")
 	withSettings := boolFlag(fs, "settings", "also save ~/.claude/settings.json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: ccauth save <name> [--settings]")
+	if fs.NArg() > 1 {
+		return fmt.Errorf("usage: ccauth save [name] [--settings]")
 	}
 	name := fs.Arg(0)
+	if name == "" {
+		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+			return fmt.Errorf("usage: ccauth save <name> [--settings]")
+		}
+		fmt.Fprint(os.Stderr, "Profile name (empty = cancel): ")
+		answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
+		if readErr != nil && len(answer) == 0 {
+			return fmt.Errorf("cancelled")
+		}
+		name = strings.TrimSpace(answer)
+		if name == "" {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+	}
 
 	blob, src, err := creds.ReadCurrent()
 	if err != nil {
@@ -142,42 +203,11 @@ func cmdRestore(args []string) error {
 		return fmt.Errorf("usage: ccauth restore [name] [--settings]")
 	}
 	if fs.NArg() == 0 {
-		// Interactive: show numbered list, pick with a number.
-		profiles, err := store.List()
-		if err != nil {
+		p, ok, err := pickProfile("Number to activate")
+		if err != nil || !ok {
 			return err
 		}
-		if len(profiles) == 0 {
-			fmt.Println("No profiles. Create one: ccauth save <name>")
-			return nil
-		}
-		active := activeProfileName()
-		now := time.Now()
-		fmt.Println("Available profiles:")
-		for i, p := range profiles {
-			mark := " "
-			if p.Name == active {
-				mark = "*"
-			}
-			fmt.Printf("  %2d) %s %-12s %-28s %s\n", i+1, mark, p.Name,
-				ui.Truncate(p.Account.EmailAddress, 28),
-				expiryCell(p.Credentials.ClaudeAiOauth.RefreshTokenExpiresAt, now))
-		}
-		fmt.Fprint(os.Stderr, "Number to activate (empty = cancel): ")
-		answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
-		if readErr != nil && len(answer) == 0 {
-			return fmt.Errorf("cancelled")
-		}
-		answer = strings.TrimSpace(answer)
-		if answer == "" {
-			fmt.Println("Cancelled.")
-			return nil
-		}
-		n, aerr := strconv.Atoi(answer)
-		if aerr != nil || n < 1 || n > len(profiles) {
-			return fmt.Errorf("invalid number %q (1-%d)", answer, len(profiles))
-		}
-		return doRestore(profiles[n-1], *withSettings)
+		return doRestore(p, *withSettings)
 	}
 	name := fs.Arg(0)
 	p, err := store.Load(name)
@@ -286,13 +316,28 @@ func cmdList() error {
 }
 
 func cmdShow(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: ccauth show <name>")
+	if len(args) > 1 {
+		return fmt.Errorf("usage: ccauth show [name]")
 	}
-	p, err := store.Load(args[0])
-	if err != nil {
-		return err
+	var p store.Profile
+	if len(args) == 1 {
+		var err error
+		p, err = store.Load(args[0])
+		if err != nil {
+			return err
+		}
+	} else {
+		var ok bool
+		var err error
+		p, ok, err = pickProfile("Number to show")
+		if err != nil || !ok {
+			return err
+		}
 	}
+	return showProfile(p)
+}
+
+func showProfile(p store.Profile) error {
 	now := time.Now()
 	o := p.Credentials.ClaudeAiOauth
 	fmt.Printf("Profile:      %s (saved %s)\n", p.Name, p.SavedAt.Local().Format("2006-01-02 15:04"))
@@ -337,10 +382,41 @@ func cmdCurrent() error {
 }
 
 func cmdRemove(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: ccauth remove <name>")
+	if len(args) > 1 {
+		return fmt.Errorf("usage: ccauth remove [name]")
 	}
-	return store.Delete(args[0])
+	var p store.Profile
+	if len(args) == 1 {
+		var err error
+		p, err = store.Load(args[0])
+		if err != nil {
+			return err
+		}
+	} else {
+		var ok bool
+		var err error
+		p, ok, err = pickProfile("Number to delete")
+		if err != nil || !ok {
+			return err
+		}
+	}
+	if isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+		fmt.Fprintf(os.Stderr, "Delete profile %q (%s)? [y/N] ", p.Name, p.Account.EmailAddress)
+		answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
+		if readErr != nil && len(answer) == 0 {
+			return fmt.Errorf("cancelled")
+		}
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		if answer != "y" && answer != "yes" && answer != "д" && answer != "да" {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+	}
+	if err := store.Delete(p.Name); err != nil {
+		return err
+	}
+	fmt.Printf("Deleted profile %q\n", p.Name)
+	return nil
 }
 
 func cmdUpdate() error {
