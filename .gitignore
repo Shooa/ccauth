@@ -1,3 +1,4 @@
-ccauth
+/ccauth
+ccauth_*.tar.gz
 dist/
 *.test
