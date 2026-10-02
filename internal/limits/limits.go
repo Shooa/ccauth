@@ -60,17 +60,53 @@ func Fetch(ctx context.Context, accessToken string) (Usage, error) {
 	return u, nil
 }
 
-// Format renders a bucket as "27% (resets 14:19)"; empty when nil.
+// Format renders a bucket as "27%" and, when utilization is high, appends a
+// dynamic countdown: "86% resets in 1d 2h 5m". Empty when nil.
 func Format(b *Bucket, now time.Time) string {
 	if b == nil {
 		return "-"
 	}
 	pct := int(b.Utilization + 0.5)
 	s := fmt.Sprintf("%d%%", pct)
-	if !b.ResetsAt.IsZero() {
-		if pct >= 75 {
-			s += fmt.Sprintf(" resets %s", b.ResetsAt.Local().Format("15:04"))
+	if !b.ResetsAt.IsZero() && pct >= 75 {
+		d := b.ResetsAt.Sub(now)
+		if d < 0 {
+			d = 0
 		}
+		s += " resets in " + humanCountdown(d)
 	}
 	return s
+}
+
+// humanCountdown renders "1d 2h 5m", "2h 5m", "5m", "30s".
+func humanCountdown(d time.Duration) string {
+	total := int(d.Seconds())
+	if total < 0 {
+		total = 0
+	}
+	days := total / 86400
+	hours := (total % 86400) / 3600
+	mins := (total % 3600) / 60
+	secs := total % 60
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", days))
+	}
+	if days > 0 || hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if days == 0 && (hours > 0 || mins > 0) {
+		parts = append(parts, fmt.Sprintf("%dm", mins))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", secs))
+	}
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += " "
+		}
+		out += p
+	}
+	return out
 }
