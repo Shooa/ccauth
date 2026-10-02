@@ -20,10 +20,16 @@ if (-not $Version -or $Tag -eq $Version) {
     throw "ccauth installer: could not determine the latest release"
 }
 
-switch ($env:PROCESSOR_ARCHITECTURE) {
+$RawArch = $env:PROCESSOR_ARCHITEW6432
+if (-not $RawArch) { $RawArch = $env:PROCESSOR_ARCHITECTURE }
+if (-not $RawArch) { $RawArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant() }
+switch ($RawArch) {
     "AMD64" { $TargetArch = "amd64" }
+    "amd64" { $TargetArch = "amd64" }
+    "x64" { $TargetArch = "amd64" }
     "ARM64" { $TargetArch = "arm64" }
-    default { throw "ccauth installer: unsupported architecture $env:PROCESSOR_ARCHITECTURE" }
+    "arm64" { $TargetArch = "arm64" }
+    default { throw "ccauth installer: unsupported architecture '$RawArch'" }
 }
 
 $Archive = "ccauth_${Version}_windows_${TargetArch}.zip"
