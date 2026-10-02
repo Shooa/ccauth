@@ -45,7 +45,7 @@ func ParseBlob(data []byte) (Blob, error) {
 	return b, nil
 }
 
-func (o OAuth) Expiry() time.Time      { return time.UnixMilli(o.ExpiresAt) }
+func (o OAuth) Expiry() time.Time { return time.UnixMilli(o.ExpiresAt) }
 func (o OAuth) RefreshExpiry() time.Time {
 	return time.UnixMilli(o.RefreshTokenExpiresAt)
 }

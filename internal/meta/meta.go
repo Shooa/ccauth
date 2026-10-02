@@ -8,11 +8,12 @@ import (
 )
 
 type Account struct {
-	AccountUuid      string `json:"accountUuid"`
-	EmailAddress     string `json:"emailAddress"`
-	OrganizationName string `json:"organizationName"`
-	SeatTier         string `json:"seatTier"`
-	OrganizationRole string `json:"organizationRole"`
+	AccountUuid      string          `json:"accountUuid"`
+	EmailAddress     string          `json:"emailAddress"`
+	OrganizationName string          `json:"organizationName"`
+	SeatTier         string          `json:"seatTier"`
+	OrganizationRole string          `json:"organizationRole"`
+	Raw              json.RawMessage `json:"raw,omitempty"`
 }
 
 // ConfigDir returns Claude Code's config dir, honoring CLAUDE_CONFIG_DIR.
@@ -43,18 +44,51 @@ func SettingsPath() string {
 }
 
 // ReadAccount extracts the oauthAccount block from ~/.claude.json.
+// Raw keeps the untouched oauthAccount object so it can be written back later.
 func ReadAccount() (Account, error) {
 	data, err := os.ReadFile(claudeJSON())
 	if err != nil {
 		return Account{}, fmt.Errorf("meta: read %s: %w", claudeJSON(), err)
 	}
 	var doc struct {
-		OauthAccount Account `json:"oauthAccount"`
+		OauthAccount json.RawMessage `json:"oauthAccount"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return Account{}, fmt.Errorf("meta: parse %s: %w", claudeJSON(), err)
 	}
-	return doc.OauthAccount, nil
+	var acct Account
+	if len(doc.OauthAccount) > 0 {
+		if err := json.Unmarshal(doc.OauthAccount, &acct); err != nil {
+			return Account{}, fmt.Errorf("meta: parse oauthAccount: %w", err)
+		}
+		acct.Raw = json.RawMessage(doc.OauthAccount)
+	}
+	return acct, nil
+}
+
+// WriteAccount replaces the oauthAccount block in ~/.claude.json with raw,
+// preserving every other top-level key. A backup is left at .claude.json.ccauth-bak.
+func WriteAccount(raw json.RawMessage) error {
+	p := claudeJSON()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("meta: read %s: %w", p, err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("meta: parse %s: %w", p, err)
+	}
+	_ = os.WriteFile(p+".ccauth-bak", data, 0o600)
+	doc["oauthAccount"] = raw
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("meta: serialize %s: %w", p, err)
+	}
+	mode := os.FileMode(0o600)
+	if info, serr := os.Stat(p); serr == nil {
+		mode = info.Mode().Perm()
+	}
+	return os.WriteFile(p, append(out, '\n'), mode)
 }
 
 // ReadSettings returns raw settings.json content.

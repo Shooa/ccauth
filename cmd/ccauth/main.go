@@ -196,6 +196,18 @@ func doRestore(p store.Profile, withSettings bool) error {
 		return err
 	}
 	fmt.Printf("Restored profile %q (%s)\n", name, p.Account.EmailAddress)
+	// Sync ~/.claude.json's oauthAccount so the active profile is reflected
+	// immediately (otherwise the marker is stale until Claude Code rewrites it).
+	raw := p.Account.Raw
+	if len(raw) == 0 && p.Account.AccountUuid != "" {
+		p.Account.Raw = nil
+		raw, _ = json.Marshal(p.Account)
+	}
+	if len(raw) > 0 {
+		if err := meta.WriteAccount(raw); err != nil {
+			fmt.Fprintf(os.Stderr, "ccauth: warn: sync ~/.claude.json account: %v\n", err)
+		}
+	}
 	if withSettings {
 		if !p.Settings.Included {
 			return fmt.Errorf("profile %q has no saved settings", name)
