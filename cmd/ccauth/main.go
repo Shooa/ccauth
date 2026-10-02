@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Shooa/ccauth/internal/creds"
+	"github.com/Shooa/ccauth/internal/limits"
 	"github.com/Shooa/ccauth/internal/meta"
 	"github.com/Shooa/ccauth/internal/selfupdate"
 	"github.com/Shooa/ccauth/internal/store"
@@ -286,9 +287,9 @@ func cmdList() error {
 	}
 	active := activeProfileName()
 	now := time.Now()
-	headers := []string{"", "NAME", "EMAIL/ORG", "SUBSCRIPTION", "ACCESS EXPIRES", "REFRESH EXPIRES", "SETTINGS"}
-	var rows [][]string
-	for _, p := range profiles {
+	headers := []string{"", "NAME", "EMAIL/ORG", "SUBSCRIPTION", "5H USED", "7D USED", "ACCESS EXPIRES", "REFRESH EXPIRES", "SETTINGS"}
+	rows := make([][]string, len(profiles))
+	for i, p := range profiles {
 		mark := ""
 		if p.Name == active {
 			mark = "*"
@@ -301,18 +302,83 @@ func cmdList() error {
 		if p.Settings.Included {
 			set = "yes"
 		}
-		rows = append(rows, []string{
+		rows[i] = []string{
 			mark,
 			p.Name,
 			ui.Truncate(email, 46),
 			ui.Truncate(p.Credentials.ClaudeAiOauth.SubscriptionType, 14),
+			"…",
+			"…",
 			expiryCell(p.Credentials.ClaudeAiOauth.ExpiresAt, now),
 			expiryCell(p.Credentials.ClaudeAiOauth.RefreshTokenExpiresAt, now),
 			set,
-		})
+		}
 	}
-	fmt.Print(ui.Table(headers, rows))
+
+	// Fire usage probes concurrently; results fill the 5H/7D columns as they
+	// arrive (in-place redraw on a TTY, single final render when piped).
+	type usageResult struct {
+		idx   int
+		usage limits.Usage
+		err   error
+	}
+	checkUsage := os.Getenv("CCAUTH_NO_USAGE") == ""
+	results := make(chan usageResult, len(profiles))
+	if checkUsage {
+		for i, p := range profiles {
+			go func(i int, p store.Profile) {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				u, err := limits.Fetch(ctx, p.Credentials.ClaudeAiOauth.AccessToken)
+				results <- usageResult{idx: i, usage: u, err: err}
+			}(i, p)
+		}
+	}
+
+	pending := len(profiles)
+	if checkUsage {
+		pending = 0
+	}
+	linesRendered := 0
+	render := func() {
+		out := ui.Table(headers, rows)
+		if linesRendered > 0 && isTerminal(os.Stdout) {
+			fmt.Printf("\033[%dA\033[J", linesRendered)
+		}
+		fmt.Print(out)
+		linesRendered = strings.Count(out, "\n")
+	}
+	render()
+
+	if checkUsage {
+		deadline := time.After(10 * time.Second)
+		for pending < len(profiles) {
+			select {
+			case r := <-results:
+				pending++
+				rows[r.idx][4] = usageCell(r.usage.FiveHour, r.err, time.Now())
+				rows[r.idx][5] = usageCell(r.usage.SevenDay, r.err, time.Now())
+				render()
+			case <-deadline:
+				for i := range rows {
+					if rows[i][4] == "…" {
+						rows[i][4] = "n/a"
+						rows[i][5] = "n/a"
+					}
+				}
+				render()
+				pending = len(profiles)
+			}
+		}
+	}
 	return nil
+}
+
+func usageCell(b *limits.Bucket, err error, now time.Time) string {
+	if err != nil {
+		return "n/a"
+	}
+	return limits.Format(b, now)
 }
 
 func cmdShow(args []string) error {
