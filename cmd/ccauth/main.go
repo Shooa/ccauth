@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,12 +25,14 @@ func usage(w *os.File) {
 
 Usage:
   ccauth save <name> [--settings]   Save current auth (and optionally settings.json)
-  ccauth restore <name> [--settings] Restore profile (settings backup: settings.json.ccauth-bak)
+  ccauth restore [name] [--settings] Restore profile; without name: interactive picker
   ccauth list                       List profiles with token expiry
   ccauth show <name>                Profile details
   ccauth current                    Show live credentials info
   ccauth remove <name>              Delete profile
   ccauth update                     Update ccauth to the latest release
+
+Shortcuts: s=save r=restore/use cur=current up=update rm=remove ls=list
 
 Storage: ~/.ccauth/profiles (override with CCAUTH_DIR)
 Credentials source: macOS Keychain / ~/.claude/.credentials.json
@@ -53,19 +56,19 @@ func main() {
 	cmd, args := os.Args[1], os.Args[2:]
 	var err error
 	switch cmd {
-	case "save":
+	case "save", "s":
 		err = cmdSave(args)
-	case "restore", "use":
+	case "restore", "use", "r":
 		err = cmdRestore(args)
 	case "list", "ls":
 		err = cmdList()
 	case "show":
 		err = cmdShow(args)
-	case "current":
+	case "current", "cur":
 		err = cmdCurrent()
 	case "remove", "rm":
 		err = cmdRemove(args)
-	case "update":
+	case "update", "up":
 		err = cmdUpdate()
 	case "version", "--version", "-v":
 		fmt.Println("ccauth " + version)
@@ -135,15 +138,57 @@ func cmdRestore(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: ccauth restore <name> [--settings]")
+	if fs.NArg() > 1 {
+		return fmt.Errorf("usage: ccauth restore [name] [--settings]")
+	}
+	if fs.NArg() == 0 {
+		// Interactive: show numbered list, pick with a number.
+		profiles, err := store.List()
+		if err != nil {
+			return err
+		}
+		if len(profiles) == 0 {
+			fmt.Println("No profiles. Create one: ccauth save <name>")
+			return nil
+		}
+		active := activeProfileName()
+		now := time.Now()
+		fmt.Println("Available profiles:")
+		for i, p := range profiles {
+			mark := " "
+			if p.Name == active {
+				mark = "*"
+			}
+			fmt.Printf("  %2d) %s %-12s %-28s %s\n", i+1, mark, p.Name,
+				ui.Truncate(p.Account.EmailAddress, 28),
+				expiryCell(p.Credentials.ClaudeAiOauth.RefreshTokenExpiresAt, now))
+		}
+		fmt.Fprint(os.Stderr, "Number to activate (empty = cancel): ")
+		answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
+		if readErr != nil && len(answer) == 0 {
+			return fmt.Errorf("cancelled")
+		}
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+		n, aerr := strconv.Atoi(answer)
+		if aerr != nil || n < 1 || n > len(profiles) {
+			return fmt.Errorf("invalid number %q (1-%d)", answer, len(profiles))
+		}
+		return doRestore(profiles[n-1], *withSettings)
 	}
 	name := fs.Arg(0)
-
 	p, err := store.Load(name)
 	if err != nil {
 		return err
 	}
+	return doRestore(p, *withSettings)
+}
+
+func doRestore(p store.Profile, withSettings bool) error {
+	name := p.Name
 	if err := p.Credentials.Validate(); err != nil {
 		return fmt.Errorf("profile %q: %v", name, err)
 	}
@@ -151,7 +196,7 @@ func cmdRestore(args []string) error {
 		return err
 	}
 	fmt.Printf("Restored profile %q (%s)\n", name, p.Account.EmailAddress)
-	if *withSettings {
+	if withSettings {
 		if !p.Settings.Included {
 			return fmt.Errorf("profile %q has no saved settings", name)
 		}
