@@ -116,9 +116,10 @@ func pickProfile(action string) (store.Profile, bool, error) {
 		if p.Name == active {
 			mark = "*"
 		}
-		fmt.Printf("  %2d) %s %-12s %-28s %s\n", i+1, mark, p.Name,
-			ui.Truncate(p.Account.EmailAddress, 28),
-			expiryCell(p.Credentials.ClaudeAiOauth.RefreshTokenExpiresAt, now))
+		fmt.Printf("  %2d) %s %-12s %-7s %-5s %s\n", i+1, mark, p.Name,
+			ui.Truncate(p.Credentials.ClaudeAiOauth.SubscriptionType, 7),
+			freshnessCell(p.Credentials.ClaudeAiOauth, now),
+			ui.Truncate(p.Account.EmailAddress, 24))
 	}
 	fmt.Fprintf(os.Stderr, "%s (number or name, empty = cancel): ", action)
 	answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -287,31 +288,21 @@ func cmdList() error {
 	}
 	active := activeProfileName()
 	now := time.Now()
-	headers := []string{"", "NAME", "EMAIL/ORG", "SUBSCRIPTION", "5H USED", "7D USED", "ACCESS EXPIRES", "REFRESH EXPIRES", "SETTINGS"}
+	headers := []string{"", "NAME", "SUBSCRIPTION", "5H USED", "7D USED", "EMAIL", "FRESH"}
 	rows := make([][]string, len(profiles))
 	for i, p := range profiles {
 		mark := ""
 		if p.Name == active {
 			mark = "*"
 		}
-		email := p.Account.EmailAddress
-		if org := p.Account.OrganizationName; org != "" {
-			email = email + " / " + org
-		}
-		set := "-"
-		if p.Settings.Included {
-			set = "yes"
-		}
 		rows[i] = []string{
 			mark,
 			p.Name,
-			ui.Truncate(email, 46),
 			ui.Truncate(p.Credentials.ClaudeAiOauth.SubscriptionType, 14),
 			"…",
 			"…",
-			expiryCell(p.Credentials.ClaudeAiOauth.ExpiresAt, now),
-			expiryCell(p.Credentials.ClaudeAiOauth.RefreshTokenExpiresAt, now),
-			set,
+			ui.Truncate(p.Account.EmailAddress, 24),
+			freshnessCell(p.Credentials.ClaudeAiOauth, now),
 		}
 	}
 
@@ -356,14 +347,14 @@ func cmdList() error {
 			select {
 			case r := <-results:
 				pending++
-				rows[r.idx][4] = usageCell(r.usage.FiveHour, r.err, time.Now())
-				rows[r.idx][5] = usageCell(r.usage.SevenDay, r.err, time.Now())
+				rows[r.idx][3] = usageCell(r.usage.FiveHour, r.err, time.Now())
+				rows[r.idx][4] = usageCell(r.usage.SevenDay, r.err, time.Now())
 				render()
 			case <-deadline:
 				for i := range rows {
-					if rows[i][4] == "…" {
+					if rows[i][3] == "…" {
+						rows[i][3] = "n/a"
 						rows[i][4] = "n/a"
-						rows[i][5] = "n/a"
 					}
 				}
 				render()
@@ -372,6 +363,20 @@ func cmdList() error {
 		}
 	}
 	return nil
+}
+
+// freshnessCell reduces the two expiry timestamps to one flag: OK while the
+// access token is still valid, REFRESH-EXPIRED when only the refresh token
+// died, DEAD when both are gone.
+func freshnessCell(o creds.OAuth, now time.Time) string {
+	switch {
+	case o.ExpiresAt > now.UnixMilli():
+		return "ok"
+	case o.RefreshTokenExpiresAt > now.UnixMilli():
+		return "refresh-expired"
+	default:
+		return "dead"
+	}
 }
 
 func usageCell(b *limits.Bucket, err error, now time.Time) string {
