@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $Repository = "Shooa/ccauth"
 $InstallDir = if ($env:CCAUTH_INSTALL_DIR) {
@@ -10,17 +11,19 @@ $InstallDir = if ($env:CCAUTH_INSTALL_DIR) {
 $Release = Invoke-RestMethod `
     -Headers @{ Accept = "application/vnd.github+json"; "User-Agent" = "ccauth-installer" } `
     -Uri "https://api.github.com/repos/$Repository/releases/latest"
+if (-not $Release -or -not $Release.tag_name) {
+    throw "ccauth installer: GitHub API returned no release (rate limit or network?)"
+}
 $Tag = [string]$Release.tag_name
 $Version = $Tag.TrimStart("v")
 if (-not $Version -or $Tag -eq $Version) {
     throw "ccauth installer: could not determine the latest release"
 }
 
-$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
-switch ($Architecture) {
-    "x64" { $TargetArch = "amd64" }
-    "arm64" { $TargetArch = "arm64" }
-    default { throw "ccauth installer: unsupported architecture $Architecture" }
+switch ($env:PROCESSOR_ARCHITECTURE) {
+    "AMD64" { $TargetArch = "amd64" }
+    "ARM64" { $TargetArch = "arm64" }
+    default { throw "ccauth installer: unsupported architecture $env:PROCESSOR_ARCHITECTURE" }
 }
 
 $Archive = "ccauth_${Version}_windows_${TargetArch}.zip"
