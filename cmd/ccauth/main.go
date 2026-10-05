@@ -100,6 +100,7 @@ func newFlagSet(name string) *flag.FlagSet {
 // asks the user to pick one by number or by name. Returns ok=false when the
 // user cancelled.
 func pickProfile(action string) (store.Profile, bool, error) {
+	syncActiveProfile()
 	profiles, err := store.List()
 	if err != nil {
 		return store.Profile{}, false, err
@@ -270,6 +271,36 @@ func activeProfileName() string {
 	return ""
 }
 
+// syncActiveProfile pulls the live credentials into the active profile so a
+// snapshot follows Claude Code's token rotation instead of rotting. Claude
+// Code rewrites Keychain/.credentials.json after every OAuth refresh; the
+// account match (via ~/.claude.json oauthAccount uuid) proves the live
+// credentials are this profile's, so blindly copying them is safe.
+// Best-effort: failures are warnings, never block the command.
+func syncActiveProfile() {
+	name := activeProfileName()
+	if name == "" {
+		return
+	}
+	live, src, err := creds.ReadCurrent()
+	if err != nil {
+		return // no live creds (not logged in / keychain locked): nothing to sync
+	}
+	p, err := store.Load(name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ccauth: warn: sync %q: %v\n", name, err)
+		return
+	}
+	if !p.CredentialsDiffer(live) {
+		return
+	}
+	if err := store.UpdateCredentials(name, live); err != nil {
+		fmt.Fprintf(os.Stderr, "ccauth: warn: sync %q: %v\n", name, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "ccauth: synced profile %q with rotated credentials (from %s)\n", name, src)
+}
+
 func expiryCell(ms int64, now time.Time) string {
 	return ui.FmtExpiry(ms, now)
 }
@@ -278,6 +309,7 @@ func cmdList() error {
 	if len(os.Args) > 2 {
 		return fmt.Errorf("usage: ccauth list")
 	}
+	syncActiveProfile()
 	profiles, err := store.List()
 	if err != nil {
 		return err
@@ -366,14 +398,15 @@ func cmdList() error {
 }
 
 // freshnessCell reduces the two expiry timestamps to one flag: OK while the
-// access token is still valid, REFRESH-EXPIRED when only the refresh token
-// died, DEAD when both are gone.
+// access token is still valid, ACCESS-EXPIRED when the access token died but
+// the refresh token can still revive it (normal for stale snapshots),
+// DEAD when both are gone.
 func freshnessCell(o creds.OAuth, now time.Time) string {
 	switch {
 	case o.ExpiresAt > now.UnixMilli():
 		return "ok"
 	case o.RefreshTokenExpiresAt > now.UnixMilli():
-		return "refresh-expired"
+		return "access-expired"
 	default:
 		return "dead"
 	}
@@ -390,6 +423,7 @@ func cmdShow(args []string) error {
 	if len(args) > 1 {
 		return fmt.Errorf("usage: ccauth show [name]")
 	}
+	syncActiveProfile()
 	var p store.Profile
 	if len(args) == 1 {
 		var err error
@@ -411,7 +445,13 @@ func cmdShow(args []string) error {
 func showProfile(p store.Profile) error {
 	now := time.Now()
 	o := p.Credentials.ClaudeAiOauth
-	fmt.Printf("Profile:      %s (saved %s)\n", p.Name, p.SavedAt.Local().Format("2006-01-02 15:04"))
+	stamp := p.SavedAt
+	label := "saved"
+	if !p.UpdatedAt.IsZero() {
+		stamp, label = p.UpdatedAt, "updated"
+	}
+	fmt.Printf("Profile:      %s (%s %s, %s ago)\n", p.Name, label,
+		stamp.Local().Format("2006-01-02 15:04"), ui.HumanDur(now.Sub(stamp)))
 	if p.Account.EmailAddress != "" {
 		fmt.Printf("Account:      %s (%s)\n", p.Account.EmailAddress, p.Account.SeatTier)
 		fmt.Printf("Organization: %s [%s]\n", p.Account.OrganizationName, p.Account.OrganizationRole)
@@ -432,6 +472,7 @@ func cmdCurrent() error {
 	if len(os.Args) > 2 {
 		return fmt.Errorf("usage: ccauth current")
 	}
+	syncActiveProfile()
 	blob, src, err := creds.ReadCurrent()
 	if err != nil {
 		return err

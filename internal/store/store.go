@@ -21,9 +21,12 @@ type Settings struct {
 }
 
 type Profile struct {
-	Version     int          `json:"version"`
-	Name        string       `json:"name"`
-	SavedAt     time.Time    `json:"savedAt"`
+	Version int       `json:"version"`
+	Name    string    `json:"name"`
+	SavedAt time.Time `json:"savedAt"`
+	// UpdatedAt is set when the credentials were refreshed from the live
+	// store (Claude Code rotates tokens; a snapshot would otherwise rot).
+	UpdatedAt   time.Time    `json:"updatedAt,omitempty"`
 	Credentials creds.Blob   `json:"credentials"`
 	Account     meta.Account `json:"account"`
 	Settings    Settings     `json:"settings"`
@@ -89,6 +92,37 @@ func Load(name string) (Profile, error) {
 		return Profile{}, fmt.Errorf("profile %q: parse: %w", name, err)
 	}
 	return p, nil
+}
+
+// UpdateCredentials replaces a profile's credential blob in place, keeping
+// name/account/settings. Used to follow Claude Code's live token rotation
+// so the snapshot never lags behind the real credentials.
+func UpdateCredentials(name string, b creds.Blob) error {
+	if err := ValidName(name); err != nil {
+		return err
+	}
+	p, err := Load(name)
+	if err != nil {
+		return err
+	}
+	p.Credentials = b
+	p.UpdatedAt = time.Now()
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(profilePath(name), append(data, '\n'), 0o600)
+}
+
+// CredentialsDiffer reports whether b differs from the profile's stored
+// credentials (JSON comparison, field order is stable).
+func (p Profile) CredentialsDiffer(b creds.Blob) bool {
+	a, err1 := json.Marshal(p.Credentials)
+	c, err2 := json.Marshal(b)
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return string(a) != string(c)
 }
 
 func List() ([]Profile, error) {
